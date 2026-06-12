@@ -1487,6 +1487,45 @@ describe("aggregate per-call output budget", () => {
 		expect(result[1].success).toBe(false);
 	});
 
+	it("counts structured image results against the combined budget", async () => {
+		const execute = vi.fn(async () => [
+			{ type: "image", data: "A".repeat(60_000), mimeType: "image/png" },
+		]);
+		const tool = createReadFilesTool(execute as never);
+
+		const result = (await tool.execute(
+			{ files: [{ path: "/tmp/a.png" }, { path: "/tmp/b.png" }] },
+			ctx,
+		)) as Array<{ query: string; result: unknown; success: boolean }>;
+
+		expect(Array.isArray(result[0].result)).toBe(true);
+		expect(typeof result[1].result).toBe("string");
+		expect(result[1].result).toContain("combined read_files output budget");
+	});
+
+	it("emits a full placeholder even when the budget is exactly consumed", async () => {
+		// Two 48k reads consume the 96k budget exactly; the third entry must
+		// still get an informative placeholder, never a silent empty result.
+		const execute = vi.fn(async () => "z".repeat(48_000));
+		const tool = createReadFilesTool(execute);
+
+		const result = (await tool.execute(
+			{
+				files: [
+					{ path: "/tmp/a.txt" },
+					{ path: "/tmp/b.txt" },
+					{ path: "/tmp/c.txt" },
+				],
+			},
+			ctx,
+		)) as Array<{ query: string; result: string; success: boolean }>;
+
+		expect(result[0].result).toHaveLength(48_000);
+		expect(result[1].result).toHaveLength(48_000);
+		expect(result[2].result).toContain("combined read_files output budget");
+		expect(result[2].result.length).toBeGreaterThan(0);
+	});
+
 	it("leaves batched calls under the combined budget untouched", async () => {
 		const execute = vi.fn(async () => "small output");
 		const tool = createBashTool(execute);

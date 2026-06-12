@@ -154,27 +154,6 @@ describe("createBashExecutor", () => {
 			"aborted",
 		);
 	});
-});
-
-describe.runIf(process.platform === "win32")("createWindowsExecutor", () => {
-	it("runs structured commands without shell parsing", async () => {
-		const executor = createBashExecutor();
-		const output = await executor(
-			{
-				command: process.execPath,
-				args: ["-e", "process.stdout.write(process.argv[1])", "argv-ok"],
-			},
-			process.cwd(),
-			ctx,
-		);
-		expect(output).toBe("argv-ok");
-	});
-
-	it("runs string commands through the shell", async () => {
-		const executor = createBashExecutor();
-		const output = await executor("echo shell-ok", process.cwd(), ctx);
-		expect(output.trim()).toBe("shell-ok");
-	});
 
 	it("flushes a trailing incomplete multibyte sequence instead of dropping it", async () => {
 		const bash = createBashExecutor();
@@ -209,6 +188,27 @@ describe.runIf(process.platform === "win32")("createWindowsExecutor", () => {
 		expect(output).toBe("100% done\nfinished");
 	});
 
+	it("appends the notice without duplicating output when CR collapse shrinks dropped output under the cap", async () => {
+		// 'a%\r' x 200 overflows the 100-char rolling buffer (so the stream
+		// genuinely dropped its middle), but collapses to just 'done'.
+		// Slicing that short remainder would emit it twice.
+		const bash = createBashExecutor({ maxOutputChars: 100 });
+		const output = await bash(
+			{
+				command: process.execPath,
+				args: [
+					"-e",
+					String.raw`process.stdout.write('a%\r'.repeat(200) + 'done')`,
+				],
+			},
+			process.cwd(),
+			ctx,
+		);
+		expect(output.startsWith("done")).toBe(true);
+		expect(output).toContain("output truncated: 604 chars total");
+		expect(output.match(/done/g)).toHaveLength(1);
+	});
+
 	it("honors maxOutputChars and the deprecated maxOutputBytes alias", async () => {
 		const emit = {
 			command: process.execPath,
@@ -226,5 +226,26 @@ describe.runIf(process.platform === "win32")("createWindowsExecutor", () => {
 		);
 		expect(renamed).toContain("output truncated: 500 chars total");
 		expect(alias).toContain("output truncated: 500 chars total");
+	});
+});
+
+describe.runIf(process.platform === "win32")("createWindowsExecutor", () => {
+	it("runs structured commands without shell parsing", async () => {
+		const executor = createBashExecutor();
+		const output = await executor(
+			{
+				command: process.execPath,
+				args: ["-e", "process.stdout.write(process.argv[1])", "argv-ok"],
+			},
+			process.cwd(),
+			ctx,
+		);
+		expect(output).toBe("argv-ok");
+	});
+
+	it("runs string commands through the shell", async () => {
+		const executor = createBashExecutor();
+		const output = await executor("echo shell-ok", process.cwd(), ctx);
+		expect(output.trim()).toBe("shell-ok");
 	});
 });

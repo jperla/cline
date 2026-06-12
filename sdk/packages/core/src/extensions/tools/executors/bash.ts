@@ -144,14 +144,19 @@ function truncateMiddle(
 	maxChars: number,
 	totalChars: number,
 ): string {
+	const notice =
+		`\n[... output truncated: ${totalChars} chars total. ` +
+		"Refine the command (grep, head, tail) to view the elided middle ...]\n";
+	// Carriage-return collapse can shrink rolled output well under the cap
+	// even though the stream genuinely dropped its middle. Slicing here
+	// would duplicate the text (head and tail would overlap), so just
+	// append the notice to the intact remainder.
+	if (text.length <= maxChars) {
+		return text + notice;
+	}
 	const headLimit = Math.ceil(maxChars / 2);
 	const tailLimit = Math.max(1, maxChars - headLimit);
-	return (
-		`${text.slice(0, headLimit)}\n` +
-		`[... output truncated: ${totalChars} chars total. ` +
-		"Refine the command (grep, head, tail) to view the elided middle ...]\n" +
-		text.slice(-tailLimit)
-	);
+	return `${text.slice(0, headLimit)}${notice}${text.slice(-tailLimit)}`;
 }
 
 function spawnAndCollect(

@@ -151,6 +151,33 @@ export function formatRunCommandQueryPreview(
 }
 
 /**
+ * Measure how many characters an entry contributes to the conversation.
+ * Structured results (e.g. read_files image reads return arrays of
+ * text/image blocks) are walked recursively so base64 image payloads and
+ * nested text count too — a non-string result is content, not free.
+ */
+function measureToolResultChars(value: unknown): number {
+	if (typeof value === "string") {
+		return value.length;
+	}
+	if (Array.isArray(value)) {
+		let total = 0;
+		for (const item of value) {
+			total += measureToolResultChars(item);
+		}
+		return total;
+	}
+	if (value !== null && typeof value === "object") {
+		let total = 0;
+		for (const item of Object.values(value)) {
+			total += measureToolResultChars(item);
+		}
+		return total;
+	}
+	return 0;
+}
+
+/**
  * Enforce a combined output budget across all entries of one batched tool
  * call. Per-entry caps bound each command/file/query individually, but a
  * single call can batch many entries that are each under their own cap and
@@ -162,6 +189,12 @@ export function formatRunCommandQueryPreview(
  * The switch is one-way on purpose: back-filling smaller later entries
  * would make what the model sees depend on accidental ordering, and the
  * predictable rule is the one the model can learn from.
+ *
+ * Placeholders are always emitted in full, even when the budget is already
+ * exactly consumed — a clipped or empty placeholder would be
+ * indistinguishable from a legitimately empty result and would swallow
+ * error messages. The overshoot is bounded by entries × placeholder length,
+ * which is noise next to the content the budget exists to bound.
  */
 export function applyAggregateToolOutputBudget(
 	entries: ToolOperationResult[],
@@ -173,7 +206,7 @@ export function applyAggregateToolOutputBudget(
 
 	return entries.map((entry) => {
 		const size =
-			(typeof entry.result === "string" ? entry.result.length : 0) +
+			measureToolResultChars(entry.result) +
 			(typeof entry.error === "string" ? entry.error.length : 0);
 		if (!exhausted && size <= remaining) {
 			remaining -= size;
@@ -181,10 +214,7 @@ export function applyAggregateToolOutputBudget(
 		}
 
 		exhausted = true;
-		// The budget is an invariant, not a suggestion: even the placeholder
-		// is charged against what is left, and clipped if it does not fit.
-		const placeholder = makePlaceholder(entry, size).slice(0, remaining);
-		remaining -= placeholder.length;
+		const placeholder = makePlaceholder(entry, size);
 		if (entry.error !== undefined) {
 			return { ...entry, result: "", error: placeholder };
 		}
