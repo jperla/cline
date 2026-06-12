@@ -324,18 +324,17 @@ async function fetchAndCacheClineModels(): Promise<Record<string, ModelInfo>> {
 		Logger.log("Cline models fetched and saved")
 	} catch (error) {
 		Logger.error("Error fetching Cline models:", error)
-
-		// If we failed to fetch models, try to read cached models from disk
-		try {
-			const fileExists = await fileExistsAtPath(clineModelsFilePath)
-			if (fileExists) {
-				const fileContents = await fs.readFile(clineModelsFilePath, "utf8")
-				models = JSON.parse(fileContents)
-				Logger.log("Loaded Cline models from cache")
-			}
-		} catch (cacheError) {
-			Logger.error("Error reading Cline models from cache:", cacheError)
+	}
+	// If we failed to fetch models, try to read cached models from disk
+	try {
+		const fileExists = await fileExistsAtPath(clineModelsFilePath)
+		if (fileExists) {
+			const fileContents = await fs.readFile(clineModelsFilePath, "utf8")
+			models = JSON.parse(fileContents)
+			Logger.log("Loaded Cline models from cache")
 		}
+	} catch (cacheError) {
+		Logger.error("Error reading Cline models from cache:", cacheError)
 	}
 
 	// Avoid poisoning in-memory cache with an empty model map after transient failures.

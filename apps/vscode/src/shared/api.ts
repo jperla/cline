@@ -22,6 +22,7 @@ export type ApiProvider =
 	| "mistral"
 	| "vscode-lm"
 	| "cline"
+	| "cline-pass"
 	| "litellm"
 	| "moonshot"
 	| "nebius"
@@ -1022,6 +1023,24 @@ export const clineDevstralModelInfo: ModelInfo = {
 	cacheWritesPrice: 0,
 	description: "A stealth model for agentic coding tasks",
 }
+
+export type ClinePassModelId = keyof typeof clinePassModels
+export const clinePassDefaultModelId = "cline-pass/glm-5.1"
+export const clinePassModels = {
+	"cline-pass/glm-5.1": {
+		name: "cline-pass/glm-5.1",
+		maxTokens: 131_072,
+		contextWindow: 202_752,
+		supportsImages: false,
+		supportsPromptCache: true,
+		supportsReasoning: true,
+		inputPrice: 0.98,
+		outputPrice: 3.08,
+		cacheReadsPrice: 0.182,
+		cacheWritesPrice: 0,
+		description: "",
+	},
+} as const satisfies Record<string, ModelInfo>
 
 export const OPENROUTER_PROVIDER_PREFERENCES: Record<string, { order: string[]; allow_fallbacks: boolean }> = {
 	// Exacto Providers
@@ -5140,8 +5159,7 @@ export const fireworksModels = {
 		outputPrice: 8,
 		cacheWritesPrice: 0,
 		cacheReadsPrice: 0.3,
-		description:
-			"Kimi K2.6 Turbo router for high-performance agentic workloads with vision and text reasoning.",
+		description: "Kimi K2.6 Turbo router for high-performance agentic workloads with vision and text reasoning.",
 	},
 	"accounts/fireworks/models/deepseek-v4-flash": {
 		maxTokens: 384000,
@@ -5209,7 +5227,8 @@ export const fireworksModels = {
 		outputPrice: 1.2,
 		cacheWritesPrice: 0,
 		cacheReadsPrice: 0.06,
-		description: "MiniMax M2.7 is tuned for strong real-world performance across coding, agent-driven, and workflow-heavy tasks.",
+		description:
+			"MiniMax M2.7 is tuned for strong real-world performance across coding, agent-driven, and workflow-heavy tasks.",
 	},
 	"accounts/fireworks/models/qwen3p6-plus": {
 		maxTokens: 65536,
