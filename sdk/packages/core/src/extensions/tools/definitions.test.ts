@@ -8,9 +8,11 @@ import {
 	createBashTool,
 	createDefaultTools,
 	createReadFilesTool,
+	createSearchTool,
 	createSkillsTool,
 	createWindowsShellTool,
 } from "./definitions";
+import { MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS } from "./executors/output-limits";
 import { RUN_COMMAND_QUERY_PREVIEW_LIMIT, TimeoutError } from "./helpers";
 import { INPUT_ARG_CHAR_LIMIT } from "./schemas";
 import type { SkillsExecutorWithMetadata } from "./types";
@@ -1408,5 +1410,93 @@ describe("default editor tool", () => {
 			`recommended limit of ${INPUT_ARG_CHAR_LIMIT}`,
 		);
 		expect(execute).not.toHaveBeenCalled();
+	});
+});
+
+describe("aggregate per-call output budget", () => {
+	const ctx = {
+		agentId: "agent-1",
+		conversationId: "conv-1",
+		iteration: 1,
+	};
+
+	it("omits later read_files entries once the combined budget is exhausted", async () => {
+		const execute = vi.fn(async () => "z".repeat(50_000));
+		const tool = createReadFilesTool(execute);
+
+		const result = (await tool.execute(
+			{
+				files: [
+					{ path: "/tmp/a.txt" },
+					{ path: "/tmp/b.txt" },
+					{ path: "/tmp/c.txt" },
+				],
+			},
+			ctx,
+		)) as Array<{ query: string; result: string; success: boolean }>;
+
+		expect(result[0].result).toHaveLength(50_000);
+		expect(result[1].result).toContain("combined read_files output budget");
+		expect(result[1].result).toContain("omitted 50000 chars");
+		expect(result[1].query).toBe("/tmp/b.txt");
+		expect(result[1].success).toBe(true);
+		expect(result[2].result).toContain("combined read_files output budget");
+		const total = result.reduce((sum, entry) => sum + entry.result.length, 0);
+		expect(total).toBeLessThanOrEqual(MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS);
+	});
+
+	it("omits later run_commands entries once the combined budget is exhausted", async () => {
+		const execute = vi.fn(async () => "y".repeat(60_000));
+		const tool = createBashTool(execute);
+
+		const result = (await tool.execute(
+			{ commands: ["npm run build", "npm test"] },
+			ctx,
+		)) as Array<{ query: string; result: string; success: boolean }>;
+
+		expect(result[0].result).toHaveLength(60_000);
+		expect(result[1].result).toContain(
+			"Re-run this command in a separate call",
+		);
+		expect(result[1].query).toBe("npm test");
+		expect(result[1].success).toBe(true);
+	});
+
+	it("places search_codebase placeholders in the error field for failed entries", async () => {
+		const execute = vi.fn(async (query: string) => {
+			if (query === "boom") {
+				throw new Error("x".repeat(70_000));
+			}
+			return "m".repeat(90_000);
+		});
+		const tool = createSearchTool(execute);
+
+		const result = (await tool.execute(
+			{ queries: ["needle", "boom"] },
+			ctx,
+		)) as Array<{
+			query: string;
+			result: string;
+			error?: string;
+			success: boolean;
+		}>;
+
+		expect(result[0].result).toHaveLength(90_000);
+		expect(result[1].result).toBe("");
+		expect(result[1].error).toContain("combined search_codebase output budget");
+		expect(result[1].success).toBe(false);
+	});
+
+	it("leaves batched calls under the combined budget untouched", async () => {
+		const execute = vi.fn(async () => "small output");
+		const tool = createBashTool(execute);
+
+		const result = (await tool.execute(
+			{ commands: ["ls", "pwd"] },
+			ctx,
+		)) as Array<{ result: string }>;
+
+		expect(result[0].result).toBe("small output");
+		expect(result[1].result).toBe("small output");
 	});
 });

@@ -17,8 +17,11 @@ import {
 	MAX_COMMAND_OUTPUT_CHARS,
 	MAX_READ_LINES,
 	MAX_READ_OUTPUT_CHARS,
+	MAX_SEARCH_OUTPUT_CHARS,
+	MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS,
 } from "./executors/output-limits";
 import {
+	applyAggregateToolOutputBudget,
 	formatError,
 	formatReadFileQuery,
 	formatRunCommandQueryPreview,
@@ -129,6 +132,7 @@ export function createReadFilesTool(
 		description:
 			"Read the content of text or image files at the provided absolute paths, or return only an inclusive one-based line range when start_line/end_line are provided. " +
 			`Each read returns at most ${MAX_READ_LINES} lines / ~${Math.round(MAX_READ_OUTPUT_CHARS / 1024)}k characters; longer files report their total line count, page through them with start_line/end_line. ` +
+			`Combined output across one call is capped at ~${Math.round(MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS / 1000)}k characters; reads past the cap are omitted with a placeholder, so batch small files freely but read large files in separate calls. ` +
 			"Binary files that are not image and large files are not supported. " +
 			"Returns file contents or error messages for each path. ",
 		inputSchema: zodToJsonSchema(ReadFilesInputSchema),
@@ -167,7 +171,7 @@ export function createReadFilesTool(
 				requests = [validate];
 			}
 
-			return Promise.all(
+			const results = await Promise.all(
 				requests.map(async (request): Promise<ToolOperationResult> => {
 					const rangeError = getReadFileRangeError(request);
 					if (rangeError) {
@@ -201,6 +205,12 @@ export function createReadFilesTool(
 					}
 				}),
 			);
+			return applyAggregateToolOutputBudget(
+				results,
+				MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS,
+				(_entry, omittedChars) =>
+					`[omitted ${omittedChars} chars: combined read_files output budget for this call exhausted. Read this path (or a narrower line range) in a separate call.]`,
+			);
 		},
 	});
 }
@@ -222,7 +232,8 @@ export function createSearchTool(
 		description:
 			"Perform regex pattern searches across the codebase. " +
 			"Supports multiple parallel searches. " +
-			"Use for finding code patterns, function definitions, class names, imports, etc.",
+			"Use for finding code patterns, function definitions, class names, imports, etc. " +
+			`Output beyond ~${Math.round(MAX_SEARCH_OUTPUT_CHARS / 1000)}k characters per query is middle-truncated and combined output per call is capped at ~${Math.round(MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS / 1000)}k; narrow patterns beat broad ones.`,
 		inputSchema: zodToJsonSchema(SearchCodebaseInputSchema),
 		timeoutMs: timeoutMs * 2,
 		retryable: true,
@@ -238,7 +249,7 @@ export function createSearchTool(
 						: [validate.queries]
 					: [validate];
 
-			return Promise.all(
+			const results = await Promise.all(
 				queries.map(async (query): Promise<ToolOperationResult> => {
 					try {
 						const results = await withTimeout(
@@ -264,6 +275,12 @@ export function createSearchTool(
 						};
 					}
 				}),
+			);
+			return applyAggregateToolOutputBudget(
+				results,
+				MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS,
+				(_entry, omittedChars) =>
+					`[omitted ${omittedChars} chars: combined search_codebase output budget for this call exhausted. Run this query in a separate call or narrow the pattern.]`,
 			);
 		},
 	});
@@ -291,7 +308,7 @@ export function createBashTool(
 			"Run shell commands from the root of the workspace. " +
 			"Use for listing files, checking git status, running builds, executing tests, etc. " +
 			"Commands should be properly shell-escaped and targeted to avoid error or timeout. " +
-			`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved); pipe through grep/head/tail when you need specific sections of large output. ` +
+			`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved) and combined output per call is capped at ~${Math.round(MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS / 1000)}k; pipe through grep/head/tail when you need specific sections of large output. ` +
 			"For long-running commands, run them in background and redirect output to a tmp file that you can read from later.",
 		inputSchema: zodToJsonSchema(RunCommandsInputSchema),
 		timeoutMs: timeoutMs * 2,
@@ -314,7 +331,7 @@ export function createBashTool(
 				commands = [validate.cmd];
 			}
 
-			return Promise.all(
+			const results = await Promise.all(
 				commands.map(async (command: string): Promise<ToolOperationResult> => {
 					const startedAt = Date.now();
 					const query = formatRunCommandQueryPreview(command);
@@ -348,6 +365,12 @@ export function createBashTool(
 					}
 				}),
 			);
+			return applyAggregateToolOutputBudget(
+				results,
+				MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS,
+				(_entry, omittedChars) =>
+					`[omitted ${omittedChars} chars: combined run_commands output budget for this call exhausted. Re-run this command in a separate call to view its output.]`,
+			);
 		},
 	});
 }
@@ -373,7 +396,7 @@ export function createWindowsShellTool(
 		description:
 			"Run shell commands from the root of the workspacein Windows environment. " +
 			"Use for listing files, checking git status, running builds, executing tests, etc. " +
-			`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved); filter output when you need specific sections. ` +
+			`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved) and combined output per call is capped at ~${Math.round(MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS / 1000)}k; filter output when you need specific sections. ` +
 			"Prefer structured { command, args } entries for portability; plain string commands should be properly shell-escaped.",
 		inputSchema: zodToJsonSchema(StructuredCommandsInputSchema),
 		timeoutMs: timeoutMs * 2,
@@ -382,7 +405,7 @@ export function createWindowsShellTool(
 		execute: async (input, context) => {
 			const commands = normalizeRunCommandsInput(input);
 
-			return Promise.all(
+			const results = await Promise.all(
 				commands.map(async (command): Promise<ToolOperationResult> => {
 					const startedAt = Date.now();
 					const query = formatRunCommandQueryPreview(command);
@@ -415,6 +438,12 @@ export function createWindowsShellTool(
 						};
 					}
 				}),
+			);
+			return applyAggregateToolOutputBudget(
+				results,
+				MAX_TOOL_CALL_AGGREGATE_OUTPUT_CHARS,
+				(_entry, omittedChars) =>
+					`[omitted ${omittedChars} chars: combined run_commands output budget for this call exhausted. Re-run this command in a separate call to view its output.]`,
 			);
 		},
 	});

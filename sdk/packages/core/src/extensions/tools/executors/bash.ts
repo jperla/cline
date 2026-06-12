@@ -32,11 +32,18 @@ export interface BashExecutorOptions {
 	timeoutMs?: number;
 
 	/**
-	 * Maximum output size, measured in characters (approximately bytes for
-	 * ASCII-dominant output). Output beyond this is middle-truncated: the
-	 * head and tail are preserved and the middle is elided, since build and
-	 * test failures usually live at the end of the output.
-	 * @default 51_200 (~50KB)
+	 * Maximum output kept, in characters. Output beyond this is
+	 * middle-truncated: the head and tail are preserved and the middle is
+	 * elided, since build and test failures usually live at the end of the
+	 * output.
+	 * @default 48_000 — see MAX_COMMAND_OUTPUT_CHARS in output-limits.ts
+	 */
+	maxOutputChars?: number;
+
+	/**
+	 * @deprecated Misnamed — the limit was always enforced in characters,
+	 * not bytes. Use {@link maxOutputChars}; this alias is honored when
+	 * maxOutputChars is not set.
 	 */
 	maxOutputBytes?: number;
 
@@ -73,26 +80,63 @@ function createRollingCollector(maxChars: number) {
 	let tail = "";
 	let totalChars = 0;
 
+	const appendText = (text: string): void => {
+		if (!text) return;
+		totalChars += text.length;
+		const headRoom = headLimit - head.length;
+		if (headRoom > 0) {
+			head += text.slice(0, headRoom);
+			tail = (tail + text.slice(headRoom)).slice(-tailLimit);
+			return;
+		}
+		tail = (tail + text).slice(-tailLimit);
+	};
+
 	return {
 		append(data: Buffer): void {
-			const text = decoder.write(data);
-			totalChars += text.length;
-			const headRoom = headLimit - head.length;
-			if (headRoom > 0) {
-				head += text.slice(0, headRoom);
-				tail = (tail + text.slice(headRoom)).slice(-tailLimit);
-				return;
-			}
-			tail = (tail + text).slice(-tailLimit);
+			appendText(decoder.write(data));
 		},
 		snapshot() {
+			// Flush bytes the decoder buffered for an incomplete multibyte
+			// sequence at end-of-stream; otherwise the final characters of
+			// non-ASCII output are silently dropped.
+			appendText(decoder.end());
+			const dropped = totalChars > head.length + tail.length;
 			return {
-				text: head + tail,
+				text: collapseCarriageReturnProgress(head + tail),
 				totalChars,
-				dropped: totalChars > head.length + tail.length,
+				dropped,
 			};
 		},
 	};
+}
+
+/**
+ * Collapse terminal progress rewrites (`12%\r13%\r...done`) to what a
+ * terminal would actually display, emulating carriage-return overwrites
+ * within each line. Pure CRLF line endings are preserved; only lines that
+ * rewrite themselves are collapsed, so progress-bar spam from pip/wget
+ * style tools stops flooding the kept output with stale frames.
+ */
+function collapseCarriageReturnProgress(text: string): string {
+	if (!text.includes("\r")) {
+		return text;
+	}
+	return text
+		.split("\n")
+		.map((line) => {
+			const hasCrlfEnding = line.endsWith("\r");
+			const body = hasCrlfEnding ? line.slice(0, -1) : line;
+			if (!body.includes("\r")) {
+				return line;
+			}
+			let rendered = "";
+			for (const segment of body.split("\r")) {
+				rendered = segment + rendered.slice(segment.length);
+			}
+			return hasCrlfEnding ? `${rendered}\r` : rendered;
+		})
+		.join("\n");
 }
 
 function truncateMiddle(
@@ -114,7 +158,7 @@ function spawnAndCollect(
 	config: SpawnConfig,
 	context: AgentToolContext,
 	timeoutMs: number,
-	maxOutputBytes: number,
+	maxOutputChars: number,
 	combineOutput: boolean,
 ): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -132,8 +176,8 @@ function spawnAndCollect(
 		});
 		const childPid = child.pid;
 
-		const stdout = createRollingCollector(maxOutputBytes);
-		const stderr = createRollingCollector(maxOutputBytes);
+		const stdout = createRollingCollector(maxOutputChars);
+		const stderr = createRollingCollector(maxOutputChars);
 		let killed = false;
 		let settled = false;
 
@@ -204,16 +248,16 @@ function spawnAndCollect(
 				? out.text + (err.text ? `\n[stderr]\n${err.text}` : "")
 				: out.text;
 			const dropped = out.dropped || (combineOutput && err.dropped);
-			if (dropped || output.length > maxOutputBytes) {
+			if (dropped || output.length > maxOutputChars) {
 				const totalChars = combineOutput
 					? out.totalChars + err.totalChars
 					: out.totalChars;
-				output = truncateMiddle(output, maxOutputBytes, totalChars);
+				output = truncateMiddle(output, maxOutputChars, totalChars);
 			}
 
 			if (code !== 0) {
 				const stderrText = err.dropped
-					? truncateMiddle(err.text, maxOutputBytes, err.totalChars)
+					? truncateMiddle(err.text, maxOutputChars, err.totalChars)
 					: err.text;
 				settle(() =>
 					reject(new Error(stderrText || `Command exited with code ${code}`)),
@@ -251,10 +295,13 @@ export function createBashExecutor(
 	const {
 		shell = getDefaultShell(process.platform),
 		timeoutMs = 30000,
-		maxOutputBytes = MAX_COMMAND_OUTPUT_CHARS,
 		env = {},
 		combineOutput = true,
 	} = options;
+	const maxOutputChars =
+		options.maxOutputChars ??
+		options.maxOutputBytes ??
+		MAX_COMMAND_OUTPUT_CHARS;
 
 	return (command, cwd, context) => {
 		const isStructured = typeof command !== "string";
@@ -269,7 +316,7 @@ export function createBashExecutor(
 			},
 			context,
 			timeoutMs,
-			maxOutputBytes,
+			maxOutputChars,
 			combineOutput,
 		);
 	};
